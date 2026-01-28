@@ -1,0 +1,21 @@
+# TRM Configuration (paper defaults)
+model:
+  hidden_dim: 512
+  num_layers: 2
+  num_heads: 8
+
+recursion:
+  outer_steps: 3  # T in paper
+  inner_steps: 6  # n in paper
+  halt_threshold: 0.9
+
+training:
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.95
+  ema_decay: 0.999
+
+data:
+  batch_size: 32
+  num_workers: 4
