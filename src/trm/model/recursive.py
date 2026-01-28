@@ -88,6 +88,41 @@ class RecursiveRefinement(nn.Module):
 
         return combined
 
+    def _forward_through_network(self, combined_embedding: torch.Tensor) -> dict:
+        """
+        Forward combined embedding through transformer and heads.
+
+        Bypasses TRMNetwork's internal embedding layer since we already have
+        combined embeddings from state addition.
+
+        Args:
+            combined_embedding: Embedding tensor of shape (B, H, W, hidden_dim)
+
+        Returns:
+            Dictionary with logits (B, H, W, num_colors) and halt_confidence (B,)
+        """
+        B, H, W, hidden_dim = combined_embedding.shape
+
+        # Flatten spatial dimensions to sequence: (B, H*W, hidden_dim)
+        x = combined_embedding.view(B, H * W, hidden_dim)
+
+        # Apply transformer stack
+        x = self.network.transformer(x)
+
+        # Output head: (B, H*W, hidden_dim) -> (B, H*W, num_colors)
+        logits = self.network.output_head(x)
+
+        # Reshape logits back to grid: (B, H, W, num_colors)
+        logits = logits.view(B, H, W, self.num_colors)
+
+        # Halting head: (B, H*W, hidden_dim) -> (B,)
+        halt_confidence = self.network.halting_head(x)
+
+        return {
+            "logits": logits,
+            "halt_confidence": halt_confidence,
+        }
+
     def forward(self, x: torch.Tensor) -> dict:
         """
         Apply recursive refinement to input grid.
@@ -130,8 +165,8 @@ class RecursiveRefinement(nn.Module):
                     is_logits=[False, True, True]
                 )
 
-                # Forward through shared network
-                output = self.network(combined)
+                # Forward through transformer and heads (bypassing embedding)
+                output = self._forward_through_network(combined)
                 z = output["logits"]
                 total_iterations += 1
 
@@ -142,8 +177,8 @@ class RecursiveRefinement(nn.Module):
                 is_logits=[True, True]
             )
 
-            # Forward through shared network
-            output = self.network(combined_yz)
+            # Forward through transformer and heads (bypassing embedding)
+            output = self._forward_through_network(combined_yz)
             y = output["logits"]
             total_iterations += 1
 

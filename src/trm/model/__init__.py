@@ -5,6 +5,7 @@ from .attention import Attention
 from .transformer import TRMLayer, TRMStack
 from .heads import OutputHead, HaltingHead
 from .network import TRMNetwork
+from .recursive import RecursiveRefinement
 
 __all__ = [
     "GridEmbedding",
@@ -17,4 +18,5 @@ __all__ = [
     "OutputHead",
     "HaltingHead",
     "TRMNetwork",
+    "RecursiveRefinement",
 ]
