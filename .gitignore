@@ -17,6 +17,10 @@ checkpoints/
 outputs/
 wandb/
 
+# ARC-AGI Dataset
+data/*
+!data/.gitkeep
+
 # IDE
 .vscode/
 .idea/
