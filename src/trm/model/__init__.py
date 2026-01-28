@@ -3,6 +3,8 @@ from .embedding import GridEmbedding
 from .layers import RMSNorm, SwiGLU, RotaryEmbedding
 from .attention import Attention
 from .transformer import TRMLayer, TRMStack
+from .heads import OutputHead, HaltingHead
+from .network import TRMNetwork
 
 __all__ = [
     "GridEmbedding",
@@ -12,4 +14,7 @@ __all__ = [
     "Attention",
     "TRMLayer",
     "TRMStack",
+    "OutputHead",
+    "HaltingHead",
+    "TRMNetwork",
 ]
