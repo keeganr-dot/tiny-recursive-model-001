@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
+from torch.optim.swa_utils import AveragedModel
 
 from .trainer import TRMTrainer
 from ..model import RecursiveRefinement
@@ -16,6 +17,7 @@ class DeepSupervisionTrainer(TRMTrainer):
     - Gradient detachment between steps (TRAIN-02)
     - Configurable max supervision steps (TRAIN-08)
     - Gradient clipping for stability (TRAIN-07)
+    - EMA weight smoothing (TRAIN-06)
 
     Args:
         model: RecursiveRefinement instance
@@ -26,6 +28,7 @@ class DeepSupervisionTrainer(TRMTrainer):
         halting_loss_weight: Weight for BCE halting loss (default 0.1)
         max_sup_steps: Maximum supervision steps (TRAIN-08, default 16)
         grad_clip_norm: Max gradient norm for clipping (TRAIN-07, default 1.0)
+        ema_decay: EMA decay rate (TRAIN-06, default 0.999)
     """
 
     def __init__(
@@ -38,12 +41,21 @@ class DeepSupervisionTrainer(TRMTrainer):
         halting_loss_weight: float = 0.1,
         max_sup_steps: int = 16,
         grad_clip_norm: float = 1.0,
+        ema_decay: float = 0.999,
     ):
         super().__init__(
             model, learning_rate, weight_decay, beta1, beta2, halting_loss_weight
         )
         self.max_sup_steps = max_sup_steps
         self.grad_clip_norm = grad_clip_norm
+        self.ema_decay = ema_decay
+
+        # EMA model for weight smoothing (TRAIN-06)
+        self.ema = AveragedModel(
+            model,
+            multi_avg_fn=lambda averaged, current, num_averaged:
+                ema_decay * averaged + (1 - ema_decay) * current
+        )
 
     def train_step_deep_supervision(
         self,
@@ -156,6 +168,9 @@ class DeepSupervisionTrainer(TRMTrainer):
         # Optimizer step
         self.optimizer.step()
 
+        # Update EMA weights (TRAIN-06)
+        self.ema.update_parameters(self.model)
+
         return {
             "total_loss": normalized_loss.item(),
             "ce_loss": (total_ce_loss / max(steps_taken, 1)).item() if isinstance(total_ce_loss, torch.Tensor) else total_ce_loss / max(steps_taken, 1),
@@ -165,3 +180,21 @@ class DeepSupervisionTrainer(TRMTrainer):
             "grad_norm": grad_norm.item(),
             "halted_early": halted_early,
         }
+
+    def get_ema_model(self) -> nn.Module:
+        """Get the EMA-averaged model for inference."""
+        return self.ema.module
+
+    def state_dict(self) -> dict:
+        """Get trainer state for checkpointing."""
+        return {
+            "model_state_dict": self.model.state_dict(),
+            "ema_state_dict": self.ema.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        """Load trainer state from checkpoint."""
+        self.model.load_state_dict(state_dict["model_state_dict"])
+        self.ema.load_state_dict(state_dict["ema_state_dict"])
+        self.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
