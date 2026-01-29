@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from src.trm.model import TRMNetwork, GridEmbedding, RecursiveRefinement
 from src.trm.data import ARCDataset, arc_collate_fn, PAD_VALUE
-from src.trm.training import TRMTrainer
+from src.trm.training import TRMTrainer, DeepSupervisionTrainer
 
 
 def load_config() -> DictConfig:
@@ -42,12 +42,13 @@ def create_model(cfg: DictConfig) -> RecursiveRefinement:
     return model
 
 
-def train_epoch(trainer, dataloader, epoch, device):
+def train_epoch(trainer, dataloader, epoch, device, use_deep_supervision=False):
     """Run one training epoch."""
     total_loss = 0.0
     total_ce = 0.0
     total_bce = 0.0
     total_acc = 0.0
+    total_steps = 0.0
     num_batches = 0
 
     for batch_idx, batch in enumerate(dataloader):
@@ -83,23 +84,31 @@ def train_epoch(trainer, dataloader, epoch, device):
                 continue
 
             # Training step
-            result = trainer.train_step(input_grid, target_grid, mask)
+            if use_deep_supervision:
+                result = trainer.train_step_deep_supervision(input_grid, target_grid, mask)
+            else:
+                result = trainer.train_step(input_grid, target_grid, mask)
 
             total_loss += result["total_loss"]
             total_ce += result["ce_loss"]
             total_bce += result["bce_loss"]
             total_acc += result["accuracy"]
+            if use_deep_supervision:
+                total_steps += result.get("steps", 0)
             num_batches += 1
 
     if num_batches == 0:
-        return {"loss": 0, "ce": 0, "bce": 0, "acc": 0}
+        return {"loss": 0, "ce": 0, "bce": 0, "acc": 0, "steps": 0}
 
-    return {
+    metrics = {
         "loss": total_loss / num_batches,
         "ce": total_ce / num_batches,
         "bce": total_bce / num_batches,
         "acc": total_acc / num_batches,
     }
+    if use_deep_supervision:
+        metrics["steps"] = total_steps / num_batches
+    return metrics
 
 
 def main():
@@ -116,6 +125,10 @@ def main():
     parser.add_argument(
         "--batch-size", type=int, default=None,
         help="Batch size (overrides config)"
+    )
+    parser.add_argument(
+        "--deep-supervision", action="store_true",
+        help="Use deep supervision training mode"
     )
     args = parser.parse_args()
 
@@ -136,13 +149,20 @@ def main():
         cfg.data.batch_size = args.batch_size
 
     print("=" * 60)
-    print("TRM Training - Basic (Terminal Supervision)")
+    if args.deep_supervision:
+        print("TRM Training - Deep Supervision")
+    else:
+        print("TRM Training - Basic (Terminal Supervision)")
     print("=" * 60)
 
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"Mode: {'fast' if args.fast else 'full'}")
+    print(f"Deep supervision: {args.deep_supervision}")
+    if args.deep_supervision:
+        print(f"  Max sup steps: {cfg.training.get('max_sup_steps', 16)}")
+        print(f"  Grad clip norm: {cfg.training.get('grad_clip_norm', 1.0)}")
 
     # Create model
     print("\nCreating model...")
@@ -154,13 +174,25 @@ def main():
     print(f"Recursion: T={cfg.recursion.outer_steps}, n={cfg.recursion.inner_steps}")
 
     # Create trainer
-    trainer = TRMTrainer(
-        model=model,
-        learning_rate=cfg.training.learning_rate,
-        weight_decay=cfg.training.weight_decay,
-        beta1=cfg.training.beta1,
-        beta2=cfg.training.beta2,
-    )
+    if args.deep_supervision:
+        trainer = DeepSupervisionTrainer(
+            model=model,
+            learning_rate=cfg.training.learning_rate,
+            weight_decay=cfg.training.weight_decay,
+            beta1=cfg.training.beta1,
+            beta2=cfg.training.beta2,
+            max_sup_steps=cfg.training.get("max_sup_steps", 16),
+            grad_clip_norm=cfg.training.get("grad_clip_norm", 1.0),
+            ema_decay=cfg.training.ema_decay,
+        )
+    else:
+        trainer = TRMTrainer(
+            model=model,
+            learning_rate=cfg.training.learning_rate,
+            weight_decay=cfg.training.weight_decay,
+            beta1=cfg.training.beta1,
+            beta2=cfg.training.beta2,
+        )
 
     # Load data
     print("\nLoading ARC-AGI dataset...")
@@ -183,16 +215,26 @@ def main():
 
     losses = []
     for epoch in range(num_epochs):
-        metrics = train_epoch(trainer, dataloader, epoch, device)
+        metrics = train_epoch(trainer, dataloader, epoch, device, use_deep_supervision=args.deep_supervision)
         losses.append(metrics["loss"])
 
-        print(
-            f"Epoch {epoch+1}/{num_epochs} | "
-            f"Loss: {metrics['loss']:.4f} | "
-            f"CE: {metrics['ce']:.4f} | "
-            f"BCE: {metrics['bce']:.4f} | "
-            f"Acc: {metrics['acc']:.2%}"
-        )
+        if args.deep_supervision:
+            print(
+                f"Epoch {epoch+1}/{num_epochs} | "
+                f"Loss: {metrics['loss']:.4f} | "
+                f"CE: {metrics['ce']:.4f} | "
+                f"BCE: {metrics['bce']:.4f} | "
+                f"Acc: {metrics['acc']:.2%} | "
+                f"Steps: {metrics.get('steps', 0):.1f}"
+            )
+        else:
+            print(
+                f"Epoch {epoch+1}/{num_epochs} | "
+                f"Loss: {metrics['loss']:.4f} | "
+                f"CE: {metrics['ce']:.4f} | "
+                f"BCE: {metrics['bce']:.4f} | "
+                f"Acc: {metrics['acc']:.2%}"
+            )
 
     print("-" * 60)
 
