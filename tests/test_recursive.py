@@ -240,6 +240,136 @@ class TestRecursiveRefinementShapes:
             assert out["halt_confidence"].shape == (batch_size,)
 
 
+class TestIntermediateStates:
+    """Tests for intermediate state collection via forward_with_intermediates."""
+
+    def test_forward_with_intermediates_returns_correct_structure(self):
+        """Test that forward_with_intermediates returns all expected keys and structure."""
+        net = TRMNetwork()
+        emb = GridEmbedding(512)
+        rec = RecursiveRefinement(net, emb, outer_steps=3, inner_steps=6, enable_halting=False)
+
+        x = torch.randint(0, 10, (2, 5, 5))
+        out = rec.forward_with_intermediates(x)
+
+        # Check all required keys exist
+        required_keys = {"final_logits", "final_halt_confidence", "intermediate_states",
+                         "iterations", "halted_early"}
+        assert set(out.keys()) == required_keys, \
+            f"Expected keys {required_keys}, got {set(out.keys())}"
+
+        # Check intermediate_states is a list of length 3 (one per outer iteration)
+        assert isinstance(out["intermediate_states"], list), \
+            "intermediate_states should be a list"
+        assert len(out["intermediate_states"]) == 3, \
+            f"Expected 3 intermediate states, got {len(out['intermediate_states'])}"
+
+        # Check each intermediate state has correct structure
+        for i, state in enumerate(out["intermediate_states"]):
+            assert isinstance(state, dict), f"Intermediate state {i} should be a dict"
+            state_keys = {"logits", "halt_confidence", "iteration"}
+            assert set(state.keys()) == state_keys, \
+                f"State {i} expected keys {state_keys}, got {set(state.keys())}"
+
+    def test_intermediate_states_have_correct_shapes(self):
+        """Test that intermediate states have correct tensor shapes."""
+        net = TRMNetwork()
+        emb = GridEmbedding(512)
+        rec = RecursiveRefinement(net, emb, outer_steps=3, inner_steps=6, enable_halting=False)
+
+        batch_size = 2
+        H, W = 4, 4
+        num_colors = 10
+        x = torch.randint(0, 10, (batch_size, H, W))
+        out = rec.forward_with_intermediates(x)
+
+        # Check each intermediate logits has shape (2, 4, 4, 10)
+        for i, state in enumerate(out["intermediate_states"]):
+            assert state["logits"].shape == (batch_size, H, W, num_colors), \
+                f"State {i} logits shape {state['logits'].shape} != ({batch_size}, {H}, {W}, {num_colors})"
+            assert state["halt_confidence"].shape == (batch_size,), \
+                f"State {i} halt_confidence shape {state['halt_confidence'].shape} != ({batch_size},)"
+
+        # Check iterations match outer_steps * (inner_steps + 1)
+        expected_iterations = 3 * (6 + 1)
+        assert out["iterations"] == expected_iterations, \
+            f"Expected {expected_iterations} iterations, got {out['iterations']}"
+
+    def test_intermediate_states_are_independent(self):
+        """Test that intermediate states are cloned (not references to final state)."""
+        net = TRMNetwork()
+        emb = GridEmbedding(512)
+        rec = RecursiveRefinement(net, emb, outer_steps=3, inner_steps=6, enable_halting=False)
+
+        x = torch.randint(0, 10, (1, 5, 5))
+        out = rec.forward_with_intermediates(x)
+
+        # Store original value from first intermediate state
+        original_first_state = out["intermediate_states"][0]["logits"].clone()
+
+        # Modify final_logits in-place
+        out["final_logits"].fill_(999.0)
+
+        # Verify intermediate_states[0]["logits"] is unchanged
+        assert torch.allclose(out["intermediate_states"][0]["logits"], original_first_state), \
+            "Intermediate states should be cloned, not references to final state"
+
+        # Verify they are NOT the same (modification should not affect intermediate)
+        assert not torch.allclose(out["intermediate_states"][0]["logits"], out["final_logits"]), \
+            "Intermediate state should differ from modified final state"
+
+    def test_forward_with_intermediates_halts_early(self):
+        """Test that forward_with_intermediates handles early halting correctly."""
+        net = TRMNetwork()
+        emb = GridEmbedding(512)
+        # Use halt_threshold=0.0 to always halt after first outer iteration
+        rec = RecursiveRefinement(net, emb, outer_steps=10, inner_steps=5,
+                                   halt_threshold=0.0, enable_halting=True)
+
+        x = torch.randint(0, 10, (1, 5, 5))
+        out = rec.forward_with_intermediates(x)
+
+        # Should halt after first outer iteration
+        assert len(out["intermediate_states"]) == 1, \
+            f"Expected 1 intermediate state (halted early), got {len(out['intermediate_states'])}"
+        assert out["halted_early"] is True, \
+            "halted_early should be True when threshold=0.0"
+
+        # Check iteration count: 1 outer iteration = 5 inner + 1 outer = 6 calls
+        expected_iterations = 5 + 1
+        assert out["iterations"] == expected_iterations, \
+            f"Expected {expected_iterations} iterations, got {out['iterations']}"
+
+    def test_forward_and_forward_with_intermediates_match(self):
+        """Test that forward() and forward_with_intermediates() produce consistent final results."""
+        net = TRMNetwork()
+        emb = GridEmbedding(512)
+        rec = RecursiveRefinement(net, emb, outer_steps=3, inner_steps=6, enable_halting=False)
+
+        # Use same input for both methods
+        x = torch.randint(0, 10, (2, 8, 8))
+
+        # Call both methods
+        out_regular = rec.forward(x)
+        out_intermediates = rec.forward_with_intermediates(x)
+
+        # Assert final_logits match forward()["logits"]
+        assert torch.allclose(out_intermediates["final_logits"], out_regular["logits"]), \
+            "final_logits should match forward()['logits']"
+
+        # Assert final_halt_confidence match forward()["halt_confidence"]
+        assert torch.allclose(out_intermediates["final_halt_confidence"], out_regular["halt_confidence"]), \
+            "final_halt_confidence should match forward()['halt_confidence']"
+
+        # Assert iterations match
+        assert out_intermediates["iterations"] == out_regular["iterations"], \
+            f"iterations should match: {out_intermediates['iterations']} vs {out_regular['iterations']}"
+
+        # Assert halted_early match
+        assert out_intermediates["halted_early"] == out_regular["halted_early"], \
+            f"halted_early should match: {out_intermediates['halted_early']} vs {out_regular['halted_early']}"
+
+
 class TestRecursiveRefinementIntegration:
     """Integration tests for recursive refinement."""
 
