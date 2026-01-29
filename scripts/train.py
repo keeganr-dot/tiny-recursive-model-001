@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.trm.model import TRMNetwork, GridEmbedding, RecursiveRefinement
-from src.trm.data import ARCDataset, arc_collate_fn, PAD_VALUE
+from src.trm.data import ARCDataset, AugmentedARCDataset, arc_collate_fn, PAD_VALUE
 from src.trm.training import TRMTrainer, DeepSupervisionTrainer
 
 
@@ -130,6 +130,18 @@ def main():
         "--deep-supervision", action="store_true",
         help="Use deep supervision training mode"
     )
+    parser.add_argument(
+        "--augment", action="store_true",
+        help="Enable data augmentation (D8 + color permutation)"
+    )
+    parser.add_argument(
+        "--no-d8", action="store_true",
+        help="Disable D8 geometric augmentation (only with --augment)"
+    )
+    parser.add_argument(
+        "--no-color", action="store_true",
+        help="Disable color permutation augmentation (only with --augment)"
+    )
     args = parser.parse_args()
 
     # Load config (Hydra-compatible YAML format)
@@ -159,6 +171,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"Mode: {'fast' if args.fast else 'full'}")
+    print(f"Augmentation: {args.augment}")
+    if args.augment:
+        print(f"  D8: {not args.no_d8}, Color: {not args.no_color}")
     print(f"Deep supervision: {args.deep_supervision}")
     if args.deep_supervision:
         print(f"  Max sup steps: {cfg.training.get('max_sup_steps', 16)}")
@@ -197,7 +212,20 @@ def main():
     # Load data
     print("\nLoading ARC-AGI dataset...")
     data_dir = project_root / "data"
-    dataset = ARCDataset(data_dir=str(data_dir), split="training")
+
+    if args.augment:
+        enable_d8 = not args.no_d8
+        enable_color = not args.no_color
+        dataset = AugmentedARCDataset(
+            data_dir=str(data_dir),
+            split="training",
+            enable_d8=enable_d8,
+            enable_color=enable_color,
+        )
+        aug_multiplier = dataset.pipeline.get_effective_multiplier()
+        print(f"Augmentation: D8={enable_d8}, Color={enable_color} ({aug_multiplier}x effective)")
+    else:
+        dataset = ARCDataset(data_dir=str(data_dir), split="training")
     print(f"Tasks: {len(dataset)}")
 
     dataloader = DataLoader(

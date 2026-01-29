@@ -22,3 +22,7 @@ training:
 data:
   batch_size: 32
   num_workers: 4
+
+augmentation:
+  enable_d8: true      # D8 dihedral group (8 transforms)
+  enable_color: true   # Color permutation (10! transforms)
